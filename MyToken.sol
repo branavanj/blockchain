@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-// Interface fournie
 interface IERC20 {
     function totalSupply() external view returns (uint256);
     function balanceOf(address account) external view returns (uint256);
@@ -12,98 +11,135 @@ interface IERC20 {
 }
 
 contract MyToken is IERC20 {
-    
-    // Infos du token
+    // Infos publiques du token
     string public name;
     string public symbol;
     uint8 public decimals;
-    
-    address public owner; 
+
+    // Total supply stocké en privé 
     uint256 private _totalSupply;
 
-    // Mappings requis pour l'ERC20
-    mapping(address => uint256) public override balanceOf;
-    mapping(address => mapping(address => uint256)) public override allowance;
+    // Mapping pour les soldes de chaque adresse
+    mapping(address => uint256) public balanceOf;
+    // Mapping pour gérer les permissions (Owner => Spender => Montant)
+    mapping(address => mapping(address => uint256)) public allowance;
 
-    // Events pour le suivi
+    // L'adresse de l'administrateur du contrat
+    address public owner;
+
+    // Événements pour la traçabilité sur la blockchain
     event Transfer(address indexed from, address indexed to, uint256 value);
     event Approval(address indexed owner, address indexed spender, uint256 value);
 
-    constructor() {
-        name = "StartupCoin";
-        symbol = "STC";
-        decimals = 18;
-        owner = msg.sender;
-
-        // Creation initiale de 1 million de tokens
-        _totalSupply = 1000000 * (10 ** uint256(decimals));
-
-        // Le deployeur recoit tout
-        balanceOf[msg.sender] = _totalSupply;
-
-        emit Transfer(address(0), msg.sender, _totalSupply);
+    // Modifier pour restreindre l'accès à certaines fonctions
+    modifier onlyOwner() {
+        require(msg.sender == owner, "MyToken: caller is not the owner");
+        _;
     }
 
+    constructor() {
+        // Initialisation des métadonnées
+        name = "MyToken";
+        symbol = "MTK";
+        decimals = 18;
+
+        // Le déployeur devient le propriétaire
+        owner = msg.sender;
+
+        // Création de 1 million de tokens (ajusté avec les décimales)
+        uint256 initialSupply = 1_000_000 * (10 ** uint256(decimals));
+        _totalSupply = initialSupply;
+
+        // On attribue la totalité des tokens au déployeur
+        balanceOf[msg.sender] = initialSupply;
+
+        // On émet l'event de création (depuis l'adresse 0)
+        emit Transfer(address(0), msg.sender, initialSupply);
+    }
+
+    // ==== Fonctions de l'interface IERC20 ====
+
+    // Retourne la quantité totale de tokens en circulation
     function totalSupply() external view override returns (uint256) {
         return _totalSupply;
     }
 
+    // Fonction de transfert simple
     function transfer(address recipient, uint256 amount) external override returns (bool) {
-        // Verifs de securite
-        require(recipient != address(0), "Mauvaise adresse de destination");
-        require(balanceOf[msg.sender] >= amount, "Pas assez de tokens");
-
-        // Mise a jour des soldes
-        balanceOf[msg.sender] -= amount;
-        balanceOf[recipient] += amount;
-
-        emit Transfer(msg.sender, recipient, amount);
+        // On utilise la fonction interne pour éviter de dupliquer la logique
+        _transfer(msg.sender, recipient, amount);
         return true;
     }
 
+    // Autorise une adresse (spender) à dépenser un certain montant
     function approve(address spender, uint256 amount) external override returns (bool) {
-        require(spender != address(0), "Spender invalide");
+        require(spender != address(0), "MyToken: approve to the zero address");
 
+        // Enregistrement de l'autorisation
         allowance[msg.sender][spender] = amount;
-        
         emit Approval(msg.sender, spender, amount);
+
         return true;
     }
 
+    // Transfert délégué (ex: un échange décentralisé récupère vos tokens)
     function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
-MyToken.sol        require(sender != address(0), "Sender invalide");
-        require(recipient != address(0), "Recipient invalide");
         
-        require(balanceOf[sender] >= amount, "Solde insuffisant");
-        require(allowance[sender][msg.sender] >= amount, "Allowance insuffisante");
+        // Vérification de l'autorisation
+        uint256 currentAllowance = allowance[sender][msg.sender];
+        require(currentAllowance >= amount, "MyToken: transfer amount exceeds allowance");
 
-        // On diminue l'allowance et on fait le transfert
-        allowance[sender][msg.sender] -= amount;
-        balanceOf[sender] -= amount;
-        balanceOf[recipient] += amount;
+        // Exécution du transfert
+        _transfer(sender, recipient, amount);
 
-        emit Transfer(sender, recipient, amount);
+        // Mise à jour de l'allowance restante (on soustrait ce qui a été envoyé)
+        allowance[sender][msg.sender] = currentAllowance - amount;
+        emit Approval(sender, msg.sender, allowance[sender][msg.sender]);
+
         return true;
     }
 
-    // Fonction bonus pour creer des tokens (admin seulement)
-    function mint(uint256 amount) external {
-        require(msg.sender == owner, "Seul l'owner peut mint");
-        require(msg.sender != address(0), "Adresse invalide");
+    // ==== Bonus : mint & burn ====
 
+    // Création de nouveaux tokens (réservé à l'owner)
+    function mint(uint256 amount) external onlyOwner {
+        require(owner != address(0), "MyToken: owner is the zero address");
+
+        // Augmente le total et le solde du propriétaire
         _totalSupply += amount;
-        balanceOf[msg.sender] += amount;
+        balanceOf[owner] += amount;
 
-        emit Transfer(address(0), msg.sender, amount);
+        emit Transfer(address(0), owner, amount);
     }
 
-    // Fonction bonus pour bruler ses tokens
+    // Destruction de tokens (accessible à tous)
     function burn(uint256 amount) external {
-        require(balanceOf[msg.sender] >= amount, "Solde trop bas pour burn");
+        uint256 accountBalance = balanceOf[msg.sender];
+        require(accountBalance >= amount, "MyToken: burn amount exceeds balance");
 
-        balanceOf[msg.sender] -= amount;
+        // Réduit le solde et le total supply
+        balanceOf[msg.sender] = accountBalance - amount;
         _totalSupply -= amount;
 
         emit Transfer(msg.sender, address(0), amount);
+    }
+
+    // ==== Fonction interne (Helper) ====
+
+    // Logique centrale de transfert pour éviter la répétition de code
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        // Vérifications de sécurité de base
+        require(sender != address(0), "MyToken: transfer from the zero address");
+        require(recipient != address(0), "MyToken: transfer to the zero address");
+
+        // Vérification du solde de l'expéditeur
+        uint256 senderBalance = balanceOf[sender];
+        require(senderBalance >= amount, "MyToken: transfer amount exceeds balance");
+
+        // Mise à jour des soldes
+        balanceOf[sender] = senderBalance - amount;
+        balanceOf[recipient] += amount;
+
+        emit Transfer(sender, recipient, amount);
     }
 }
